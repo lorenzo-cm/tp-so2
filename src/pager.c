@@ -51,14 +51,15 @@ void pager_init(int nframes, int nblocks) {
 
     pager.nframes = nframes;
     pager.frames_free = nframes;
-    pager.clock = 0;
+    pager.clock = -1;
     pager.frames = (struct frame_data *) malloc(nframes * sizeof(struct frame_data));
     for (int i = 0; i < nframes; i++) {
         pager.frames[i].pid = -1;
         pager.frames[i].page = -1;
-        pager.frames[i].prot = 0;
+        pager.frames[i].prot = PROT_NONE;
         pager.frames[i].dirty = 0;
     }
+
 
 
     pager.nblocks = nblocks;
@@ -67,51 +68,41 @@ void pager_init(int nframes, int nblocks) {
     for (int i = 0; i < nblocks; i++) {
         pager.block2pid[i] = -1;
     }
+    
+    // Criar vetor com número máximo de processos (um processo para cada bloco)
+    // Ficar alocando e desalocando o processo da mt trabalho e tava dando errado
+    // Essa abordagem mantem o número de processos fixos e pid -1 no elemnto significa
+    // que não tem um processo ativo nesse espaço do vetor 
+    pager.pid2proc = (struct proc **) malloc(nblocks * sizeof(struct proc *));
+    for (int i = 0; i < pager.nframes; i++) {
+        struct proc *new_proc = (struct proc *) malloc(sizeof(struct proc));
 
-    pager.pid2proc = NULL; // Inicialmente nenhum processo conectado
+        new_proc->pid = -1;
+        new_proc->npages = 0;
+        new_proc->maxpages = (UVM_MAXADDR - UVM_BASEADDR + 1) / sysconf(_SC_PAGESIZE);
+        new_proc->pages = (struct page_data *) malloc(new_proc->maxpages * sizeof(struct page_data));
+
+        for (int i = 0; i < new_proc->maxpages; i++) {
+            new_proc->pages[i].block = -1;      // -1 para indicar que ainda não foi alocado
+            new_proc->pages[i].on_disk = 0;
+            new_proc->pages[i].frame = -1;      // -1 para indicar que ainda não foi alocado
+        }
+
+        pager.pid2proc[i] = new_proc;
+    }
 }
 
 void pager_create(pid_t pid) {
     pthread_mutex_lock(&pager.mutex);
-
-    // Setar novo processo
-    struct proc *new_proc = (struct proc *) malloc(sizeof(struct proc));
-
-    new_proc->pid = pid;
-    new_proc->npages = 0;
-    new_proc->maxpages = (UVM_MAXADDR - UVM_BASEADDR + 1) / sysconf(_SC_PAGESIZE);
-    new_proc->pages = (struct page_data *) malloc(new_proc->maxpages * sizeof(struct page_data));
-
-    for (int i = 0; i < new_proc->maxpages; i++) {
-        new_proc->pages[i].block = -1;      // -1 para indicar que ainda não foi alocado
-        new_proc->pages[i].on_disk = 0;
-        new_proc->pages[i].frame = -1;      // -1 para indicar que ainda não foi alocado
-    }
-
     
-
-    // Se pid2proc ainda não foi inicializado, então é inicializado
-    if (pager.pid2proc == NULL) {
-        pager.pid2proc = (struct proc **) malloc(pager.nframes * sizeof(struct proc *));
-        for (int i = 0; i < pager.nframes; i++) {
-            pager.pid2proc[i] = NULL;
-        }
-    }
-
     // Adicionar o novo processo à lista de processos
     // Para isso é necessário procurar por um lugar vago
-    int found = 0;
     for (int i = 0; i < pager.nframes; i++) {
         // Se o lugar estiver vago
-        if (pager.pid2proc[i] == NULL) {
-            pager.pid2proc[i] = new_proc;
-            found = 1;
+        if (pager.pid2proc[i]->pid == -1) {
+            pager.pid2proc[i]->pid = pid;
             break;
         }
-    }
-
-    if (!found) {
-        fprintf(stderr, "Não foi possível alocar novo processo\n");
     }
 
     pthread_mutex_unlock(&pager.mutex);
@@ -134,10 +125,10 @@ void pager_destroy(pid_t pid) {
     proc->pid = -1;
     proc->npages = 0;
 
-    for (int j=0; j<proc->maxpages; j++) {
-        proc->pages[j].frame = -1;
-        proc->pages[j].block = -1;
-        proc->pages[j].on_disk = 0;
+    for (int i=0; i<proc->maxpages; i++) {
+        proc->pages[i].frame = -1;
+        proc->pages[i].block = -1;
+        proc->pages[i].on_disk = 0;
     }
 
 
