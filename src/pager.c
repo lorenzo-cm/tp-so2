@@ -60,8 +60,6 @@ void pager_init(int nframes, int nblocks) {
         pager.frames[i].dirty = 0;
     }
 
-
-
     pager.nblocks = nblocks;
     pager.blocks_free = nblocks;
     pager.block2pid = (pid_t *) malloc(nblocks * sizeof(pid_t));
@@ -203,6 +201,7 @@ void* pager_extend(pid_t pid) {
         return NULL;
     }
 
+    // Configurar bloco e atualizar pager
     pager.block2pid[block] = process->pid;
 
     process->pages[process->npages].block = block;
@@ -220,7 +219,7 @@ void* pager_extend(pid_t pid) {
 }
 
 
-int pager_release_and_get_frame() {
+int pager_second_chance() {
     while(1) {
         pager.clock = (pager.clock + 1) % pager.nframes;
 
@@ -305,9 +304,10 @@ void pager_fault(pid_t pid, void *addr) {
             }
         }
 
+        // Pegar quadro livre ou da segunda chance
         int frame = pager.frames_free > 0
             ? free_frame
-            : pager_release_and_get_frame();
+            : pager_second_chance();
 
         pager.frames[frame].pid = process->pid;
         pager.frames[frame].page = page;
@@ -383,7 +383,7 @@ int pager_syslog(pid_t pid, void *addr, size_t len) {
         return -1; // Falha na alocação de memória
     }
 
-    // Copiar os dados das páginas de memória (resolvendo falhas de página, se necessário)
+    // Copiar os dados das páginas de memória
     for (size_t i = 0; i < len; i++) {
         void *current_addr = (void *)((unsigned long)addr + i);
         int current_page_idx = ((unsigned long)current_addr - UVM_BASEADDR) / 4096;
@@ -392,7 +392,7 @@ int pager_syslog(pid_t pid, void *addr, size_t len) {
         // Resolver falha de página se necessário
         if (page->frame == -1) {
             // Página não está residente, gerar uma falha de página
-            pager_fault(pid, (void *)((unsigned long)current_addr & ~0xFFF)); // Endereço alinhado à página
+            pager_fault(pid, (void *)((unsigned long)current_addr & ~0xFFF));
         }
 
         // Calcular o endereço físico
